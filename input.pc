@@ -1,1 +1,5 @@
-42 + 69 * 420;
+let a = 42;
+let b = 69;
+let c = a * b + c;
+ley a + b
+

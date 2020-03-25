@@ -1,3 +1,4 @@
+use std::fmt::{self, Display, Error, Formatter};
 use std::iter::Peekable;
 use std::str::Chars;
 
@@ -12,23 +13,49 @@ pub enum TokenKind {
 
     // Arithmetic
     Plus,
+    // +
     Minus,
+    // -
     Slash,
-    Star, // + - / *
+    // /
+    Star,  // *
+
+    // Comparison
+    Equals,
+    // =
+    DoubleEquals,
+    // ==
+    NotEquals,
+    // !=
+    LeftArrow,
+    // <
+    LessOrEqual,
+    // <=
+    RightArrow,
+    // >
+    GreaterOrEqual, // >=
 
     // Misc
     OpenParen,
+    // [
     CloseParen,
-    // ( )
+    // )
     OpenBracket,
+    // ]
     CloseBracket,
-    // [ ]
+    // [
     OpenBrace,
-    CloseBrace,
-    // { }
+    // {
+    CloseBrace,   // }
+
+    // Punctuation
+    Bang,
+    // !
     Semicolon,
+    // ;
     Comma,
-    Dot, // ; , .
+    // ,
+    Dot,       // .
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -37,8 +64,14 @@ pub struct Token {
     text: String,
 }
 
+impl Display for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.text)
+    }
+}
+
 impl Token {
-    pub(crate) fn new(kind: TokenKind, text: String) -> Self {
+    pub fn new(kind: TokenKind, text: String) -> Self {
         Token {
             kind,
             text,
@@ -63,6 +96,8 @@ pub struct Lexer<'a> {
 impl<'a> Iterator for Lexer<'a> {
     type Item = Result<Token, String>;
 
+    // @TODO could change single char characters to match only by token.text(),
+    // so they have kind: TokenKind::SingleChar, just for brevity and ease of use
     fn next(&mut self) -> Option<Self::Item> {
         // skip whitespace
         self.skip_whitespace();
@@ -81,13 +116,16 @@ impl<'a> Iterator for Lexer<'a> {
                 TokenKind::Name
             }
 
+            // literals
             c if c.is_ascii_digit() => self.lex_int(),
 
+            // arithmetic operators
             '+' => TokenKind::Plus,
             '-' => TokenKind::Minus,
             '*' => TokenKind::Star,
             '/' => TokenKind::Slash,
 
+            // parentheses
             '(' => TokenKind::OpenParen,
             ')' => TokenKind::CloseParen,
             '[' => TokenKind::OpenBracket,
@@ -95,6 +133,13 @@ impl<'a> Iterator for Lexer<'a> {
             '{' => TokenKind::OpenBrace,
             '}' => TokenKind::CloseBrace,
 
+            // 2 character tokens
+            '=' => self.accept_or('=', TokenKind::DoubleEquals, TokenKind::Equals),
+            '!' => self.accept_or('=', TokenKind::NotEquals, TokenKind::Bang),
+            '<' => self.accept_or('=', TokenKind::LessOrEqual, TokenKind::LeftArrow),
+            '>' => self.accept_or('>', TokenKind::GreaterOrEqual, TokenKind::RightArrow),
+
+            // single punctuation
             ';' => TokenKind::Semicolon,
             ',' => TokenKind::Comma,
             '.' => TokenKind::Dot,
@@ -139,7 +184,28 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    // call `push_next_char` while the predicate is true
+    // Test the next character and push it if valid
+    fn accept(&mut self, c: char) -> bool {
+        if let Some(&peeked) = self.input.peek() {
+            if peeked == c {
+                self.push_next_char();
+                return true
+            }
+        }
+        false
+    }
+
+    // Accept `c` and return `a` or else return `b`
+    #[inline]
+    fn accept_or<T>(&mut self, c: char, a: T, b: T) -> T {
+        if self.accept(c) {
+            a
+        } else {
+            b
+        }
+    }
+
+    // Call `push_next_char` while the predicate is true
     fn push_next_char_while<F: Fn(&char) -> bool>(&mut self, f: F) {
         while let Some(true) = self.input.peek().map(&f) {
             self.push_next_char().unwrap();
@@ -148,9 +214,7 @@ impl<'a> Lexer<'a> {
 
     /// Lex an integer
     fn lex_int(&mut self) -> TokenKind {
-        while let Some(true) = self.input.peek().map(char::is_ascii_digit) {
-            self.push_next_char().unwrap();
-        }
+        self.push_next_char_while(char::is_ascii_digit);
 
         if self.input.peek() == Some(&'.') {
             self.push_next_char().unwrap();
@@ -162,9 +226,9 @@ impl<'a> Lexer<'a> {
 
     /// Lex a float
     fn lex_float(&mut self) -> TokenKind {
-        while let Some(true) = self.input.peek().map(char::is_ascii_digit) {
-            self.push_next_char().unwrap();
-        }
+        // token.text currently = "."
+
+        self.push_next_char_while(char::is_ascii_digit);
 
         TokenKind::Float
     }
@@ -172,4 +236,30 @@ impl<'a> Lexer<'a> {
 
 fn is_name(c: &char) -> bool {
     c.is_ascii_alphabetic() || *c == '_'
+}
+
+#[cfg(test)]
+mod test {
+    macro_rules! tok {
+        ($kind:ident, $text:expr) => (Token::new(TokenKind::$kind, String::from($text)))
+    }
+
+    #[test]
+    fn numbers_work() {
+        use super::*;
+
+        let input = "asdf 1234 1234.5678 0.1234 1. 1.0";
+
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.collect::<Result<Vec<_>, String>>().unwrap();
+
+        assert_eq!(tokens, vec![
+            tok!(Name, "asdf"),
+            tok!(Int, "1234"),
+            tok!(Float, "1234.5678"),
+            tok!(Float, "0.1234"),
+            tok!(Float, "1."),
+            tok!(Float, "1.0"),
+        ]);
+    }
 }

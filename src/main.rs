@@ -4,9 +4,14 @@ use std::io::prelude::*;
 
 use lexer::Lexer;
 use parser::Parser;
+use vm::Program;
+
+use crate::vm::ToProgramItems;
 
 mod lexer;
 mod parser;
+mod vm;
+
 
 fn main() -> Result<(), Box<dyn Error>> {
     let path = "input.pc";
@@ -17,7 +22,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut parser = Parser::new(Lexer::new(input.as_ref()));
 
-    println!("{:?}", parser.parse_next());
+    for statement in parser.parse_next()? {
+        let mut program = Program::new(statement.to_program_items());
+        let values = program.evaluate()?;
+        if values.len() > 0 {
+            println!("{:?}", values);
+        }
+    }
 
     Ok(())
 }
