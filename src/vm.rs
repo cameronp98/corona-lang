@@ -1,3 +1,8 @@
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+use std::str::FromStr;
+
 pub(crate) trait ToProgramItems {
     fn to_program_items(&self) -> Vec<ProgramItem>;
 }
@@ -40,61 +45,106 @@ impl<T> Stack<T> {
         self.0.push(item)
     }
 
-    fn pop(&mut self) -> Result<T, String> {
-        self.0.pop().ok_or(String::from("error: stack empty"))
+    fn pop(&mut self) -> VmResult<T> {
+        self.0.pop().ok_or(VmError::StackEmpty)
     }
 }
 
-pub(crate) struct Program {
-    items: Vec<ProgramItem>,
-    stack: Stack<String>,
-    values: Stack<Value>,
+#[derive(Debug)]
+pub enum VmError {
+    UndefinedVariable(String),
+    ParseError(String),
+    StackEmpty,
 }
 
-impl Program {
-    pub(crate) fn new(items: Vec<ProgramItem>) -> Program {
-        Program {
-            items,
-            stack: Stack::new(),
-            values: Stack::new(),
+impl fmt::Display for VmError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            VmError::UndefinedVariable(ref name) => write!(f, "Undefined variable '{}'", name),
+            VmError::StackEmpty => write!(f, "Tried to pop but stack was empty"),
+            VmError::ParseError(ref item) => write!(f, "Failed to parse '{}'", item),
+        }
+    }
+}
+
+impl Error for VmError {}
+
+type VmResult<T> = Result<T, VmError>;
+
+pub(crate) struct Vm {
+    /// Stack for program data
+    data_stack: Stack<String>,
+    /// Stack for runtime values
+    value_stack: Stack<Value>,
+    /// Runtime variables
+    vars: HashMap<String, Value>,
+}
+
+impl Vm {
+    pub(crate) fn new() -> Vm {
+        Vm {
+            // items,
+            data_stack: Stack::new(),
+            value_stack: Stack::new(),
+            vars: HashMap::new(),
         }
     }
 
-    fn command(&mut self, cmd: Command) -> Result<Option<Value>, String> {
-        let value = match cmd {
+    pub fn vars(&self) -> &HashMap<String, Value> {
+        &self.vars
+    }
+
+    fn pop_parse<T: FromStr>(&mut self) -> VmResult<T> {
+        let item = self.data_stack.pop()?;
+        item.parse().map_err(|_| VmError::ParseError(item.to_string()))
+    }
+
+    fn command(&mut self, cmd: &Command) -> VmResult<()> {
+        println!("{:?}", cmd);
+
+        match *cmd {
             Command::CreateInt => {
-                let item = self.stack.pop()?;
-                let value = item.parse().map_err(|_| format!("Failed to parse int {}", item))?;
-                Some(Value::Int(value))
+                let value = self.pop_parse()?;
+                self.value_stack.push(Value::Int(value));
+            }
+            Command::CreateFloat => {
+                let value = self.pop_parse()?;
+                self.value_stack.push(Value::Float(value));
             }
             Command::Let => {
-                let value = self.values.pop()?;
-                let name = self.stack.pop()?;
-                println!("let {} = {:?}", name, value);
-                None
+                let value = self.value_stack.pop()?;
+                let name = self.data_stack.pop()?;
+                self.vars.insert(name, value);
             }
-            _ => return Err(format!("Unimplemented command {:?}", cmd)),
-        };
+            Command::ResolveName => {
+                // currently pass by value
+                let name = self.data_stack.pop()?;
+                match self.vars.get(&name) {
+                    Some(value) => self.value_stack.push(value.clone()),
+                    None => return Err(VmError::UndefinedVariable(name)),
+                }
+            }
+            _ => {
+                println!("unimplemented command {:?}", cmd);
+            },
+        }
 
-        Ok(value)
+        Ok(())
     }
 
-    pub(crate) fn evaluate(mut self) -> Result<Vec<Value>, String> {
-        let items = self.items.clone().into_iter();
-
+    pub(crate) fn evaluate(&mut self, items: &[ProgramItem]) -> VmResult<()> {
         for item in items {
             match item {
-                ProgramItem::Command(cmd) => {
-                    if let Some(value) = self.command(cmd)? {
-                        self.values.push(value)
-                    }
-                }
-                ProgramItem::Data(data) => self.stack.push(data.clone()),
+                ProgramItem::Command(cmd) => self.command(cmd)?,
+                ProgramItem::Data(data) => self.data_stack.push(data.clone()),
             }
         }
 
-        let Stack(values) = self.values;
+        Ok(())
+    }
 
-        Ok(values)
+    pub fn finish(self) -> Vec<Value> {
+        let Stack(values) = self.value_stack;
+        values
     }
 }

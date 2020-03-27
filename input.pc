@@ -1,5 +1,5 @@
 let a = 42;
 let b = 69;
-let c = a * b + c;
-ley a + b
+let c = 3.14;
+let d = a * b + c;
 

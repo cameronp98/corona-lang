@@ -3,14 +3,13 @@ use std::fs::File;
 use std::io::prelude::*;
 
 use parser::Parser;
-use vm::Program;
+use vm::Vm;
 
 use crate::vm::ToProgramItems;
 
 mod lexer;
 mod parser;
 mod vm;
-
 
 fn main() -> Result<(), Box<dyn Error>> {
     let path = "input.pc";
@@ -21,13 +20,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut parser = Parser::new(&input);
 
+    let mut vm = Vm::new();
+
     for statement in parser.parse_next()? {
-        let program = Program::new(statement.to_program_items());
-        let values = program.evaluate()?;
-        if values.len() > 0 {
-            println!("{:?}", values);
-        }
+        vm.evaluate(&statement.to_program_items())?;
     }
+
+    println!("{:#?}", vm.vars());
+    let values = vm.finish();
+    println!("{:#?}", values);
 
     Ok(())
 }
