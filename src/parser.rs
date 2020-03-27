@@ -1,11 +1,14 @@
-use std::fmt::{self, Display, Error, Formatter};
+use std::error::Error;
+use std::fmt::{self, Display};
 use std::iter::Peekable;
 
-use crate::lexer::{Lexer, Token, TokenKind};
+use generic_lexer::{Lexer, MatchError};
+
+use crate::lexer::{self, Token, TokenKind};
 use crate::vm::{Command, ProgramItem, ToProgramItems};
 
-#[derive(Debug, Eq, PartialEq)]
-enum Expect {
+#[derive(Debug)]
+pub enum Expect {
     Kind(TokenKind),
     Text(String),
     Token(Token),
@@ -15,17 +18,12 @@ enum Expect {
 impl Expect {
     fn matches(&self, token: &Token) -> bool {
         match *self {
-            Expect::Kind(ref kind) => *token.kind() == *kind,
+            Expect::Kind(kind) => *token.kind() == kind,
             Expect::Text(ref text) => *token.text() == *text,
             Expect::Token(ref expect) => *token.kind() == *expect.kind() && *token.text() == *expect.text(),
             Expect::Any(ref options) => options.iter().any(|opt| opt.matches(token)),
         }
     }
-}
-
-/// A parser
-pub struct Parser<'a> {
-    lexer: Peekable<Lexer<'a>>,
 }
 
 /// A value
@@ -154,22 +152,63 @@ impl Display for Block {
     }
 }
 
+/// An error occurring at some point during parsing
+#[derive(Debug)]
+pub enum ParseError {
+    Simple(String),
+    Match(MatchError),
+    ExpectedButGot(Expect, Token),
+    UnexpectedEof,
+    Unexpected(Token),
+}
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            ParseError::Simple(ref err) => err.fmt(f),
+            ParseError::Match(ref err) => err.fmt(f),
+            ParseError::ExpectedButGot(ref exp, ref got) => write!(f, "Expected {:?} but got {:?}", exp, got),
+            ParseError::UnexpectedEof => write!(f, "Unexpected EOF"),
+            ParseError::Unexpected(ref tok) => write!(f, "Unexpected {:?}", tok),
+        }
+    }
+}
+
+impl Error for ParseError {}
+
+impl From<MatchError> for ParseError {
+    fn from(err: MatchError) -> Self {
+        ParseError::Match(err)
+    }
+}
+
+/// Result of some part of the parse process
+pub type ParseResult<T> = Result<T, ParseError>;
+
+/// A parser
+pub struct Parser<'a> {
+    lexer: Peekable<Lexer<'a, TokenKind>>,
+}
+
 impl<'a> Parser<'a> {
     /// Create a new parser
-    pub fn new(lexer: Lexer<'a>) -> Self {
+    pub fn new(input: &'a str) -> Self {
         Parser {
-            lexer: lexer.peekable(),
+            lexer: lexer::lex(input).peekable(),
         }
     }
 
-    // Fetch the next token (if there is one)
+    // Fetch the next token (if there is one) or return `ParseError::UnexpectedEof`
+    // Use peek to test if there is a token beforehand.
     #[inline]
-    fn next_token(&mut self) -> Result<Token, String> {
-        self.lexer.next().ok_or(String::from("Unexpected EOF"))?
+    fn next_token(&mut self) -> ParseResult<Token> {
+        self.lexer.next()
+            .ok_or(ParseError::UnexpectedEof)?
+            .map_err(|e| e.into())
     }
 
     /// Parse the next item
-    pub fn parse_next(&mut self) -> Result<Vec<Statement>, String> {
+    pub fn parse_next(&mut self) -> ParseResult<Vec<Statement>> {
         let mut statements = vec![];
 
         while self.lexer.peek().is_some() {
@@ -180,8 +219,8 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a statement
-    fn parse_statement(&mut self) -> Result<Statement, String> {
-        if let Some(_) = self.accept(Expect::Token(Token::new(TokenKind::Name, String::from("let"))))? {
+    fn parse_statement(&mut self) -> ParseResult<Statement> {
+        if let Some(_) = self.accept(Expect::Token(Token::new(TokenKind::Name, "let".to_string())))? {
             self.parse_let()
         } else {
             let expr = self.parse_expr()?;
@@ -191,7 +230,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse let statement
-    fn parse_let(&mut self) -> Result<Statement, String> {
+    fn parse_let(&mut self) -> ParseResult<Statement> {
         let name = self.expect(Expect::Kind(TokenKind::Name))?;
         let _ = self.expect(Expect::Kind(TokenKind::Equals))?;
         let expr = self.parse_expr()?;
@@ -200,12 +239,12 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse the next expr
-    fn parse_expr(&mut self) -> Result<Expr, String> {
+    fn parse_expr(&mut self) -> ParseResult<Expr> {
         self.parse_sum()
     }
 
     // + or -
-    fn parse_sum(&mut self) -> Result<Expr, String> {
+    fn parse_sum(&mut self) -> ParseResult<Expr> {
         let left = self.parse_product()?;
 
         let plus_or_minus = Expect::Any(vec![Expect::Kind(TokenKind::Plus), Expect::Kind(TokenKind::Minus)]);
@@ -224,14 +263,14 @@ impl<'a> Parser<'a> {
     }
 
     // * or /
-    fn parse_product(&mut self) -> Result<Expr, String> {
-        let left = self.parse_term()?;
+    fn parse_product(&mut self) -> ParseResult<Expr> {
+        let left = Expr::Term(self.parse_term()?);
 
         let star_or_slash = Expect::Any(vec![Expect::Kind(TokenKind::Star), Expect::Kind(TokenKind::Slash)]);
 
         match self.accept(star_or_slash)? {
             Some(token) => {
-                let right = self.parse_term()?;
+                let right = Expr::Term(self.parse_term()?);
                 Ok(Expr::Binary {
                     op: token.text().clone(),
                     left: Box::new(left),
@@ -243,48 +282,51 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse the next term
-    fn parse_term(&mut self) -> Result<Expr, String> {
+    fn parse_term(&mut self) -> ParseResult<Term> {
         let token = self.next_token()?;
 
         let term = match token.kind() {
-            TokenKind::Int => Expr::Term(Term::Int(token.text().parse().unwrap())),
-            TokenKind::Float => Expr::Term(Term::Float(token.text().parse().unwrap())),
-            TokenKind::Name => Expr::Term(Term::Name(token.text().clone())),
-            TokenKind::OpenBrace => self.parse_block()?,
-            _ => return Err(format!("Expected value, got {:?}", token)),
+            TokenKind::Int => Term::Int(token.text().parse().unwrap()),
+            TokenKind::Float => Term::Float(token.text().parse().unwrap()),
+            TokenKind::Name => Term::Name(token.text().to_string()),
+            // TokenKind::OpenBrace => self.parse_block()?,
+            _ => return Err(ParseError::Unexpected(token)),
         };
 
         Ok(term)
     }
 
     /// Parse a block
-    fn parse_block(&mut self) -> Result<Expr, String> {
+    fn parse_block(&mut self) -> ParseResult<Block> {
         unimplemented!()
     }
 
     /// Expect a given token
-    fn expect(&mut self, expected: Expect) -> Result<Token, String> {
+    fn expect(&mut self, expected: Expect) -> ParseResult<Token> {
         let actual = self.next_token()?;
 
         if !expected.matches(&actual) {
-            return Err(format!("Expected {:?} but got {:?}", expected, actual));
+            return Err(ParseError::ExpectedButGot(expected, actual));
         }
 
         Ok(actual)
     }
 
     /// Peek a token and advance if it matches
-    fn accept(&mut self, expected: Expect) -> Result<Option<Token>, String> {
-        let actual = match self.lexer.peek() {
-            Some(Ok(a)) => a,
-            Some(Err(e)) => return Err(e.clone()),
+    fn accept(&mut self, expected: Expect) -> ParseResult<Option<Token>> {
+        // Return Ok(None) if there is no token or if there is and it does not match `expected`
+        match self.lexer.peek() {
             None => return Ok(None),
-        };
-
-        if expected.matches(&actual) {
-            Ok(Some(self.next_token()?))
-        } else {
-            Ok(None)
+            Some(Ok(token)) => {
+                if !expected.matches(token) {
+                    return Ok(None)
+                }
+            },
+            _ => {},
         }
+
+        // otherwise unwrap the token because we will now know there will be one
+        // and wrap it in an option
+        self.next_token().map(|t| Some(t))
     }
 }

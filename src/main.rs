@@ -2,7 +2,6 @@ use std::error::Error;
 use std::fs::File;
 use std::io::prelude::*;
 
-use lexer::Lexer;
 use parser::Parser;
 use vm::Program;
 
@@ -20,10 +19,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut input = String::new();
     file.read_to_string(&mut input)?;
 
-    let mut parser = Parser::new(Lexer::new(input.as_ref()));
+    let mut parser = Parser::new(&input);
 
     for statement in parser.parse_next()? {
-        let mut program = Program::new(statement.to_program_items());
+        let program = Program::new(statement.to_program_items());
         let values = program.evaluate()?;
         if values.len() > 0 {
             println!("{:?}", values);

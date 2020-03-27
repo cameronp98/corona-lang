@@ -1,5 +1,3 @@
-use crate::parser::Statement;
-
 pub(crate) trait ToProgramItems {
     fn to_program_items(&self) -> Vec<ProgramItem>;
 }
